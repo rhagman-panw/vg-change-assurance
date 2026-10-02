@@ -857,7 +857,7 @@ def build_html(title_key: str, devices: List[Device], theme: str = "auto") -> st
 <title>{esc(title_key)} - Upgrade Assurance Report</title>
 <style>{CSS}</style><script>{JS}</script></head>
 <body>
-<header><h1>{badge(overall)} Upgrade Assurance Report - {esc(title_key)}</h1>
+<header><h1>{badge(overall)} Change Assurance Report - {esc(title_key)}</h1>
 <div class="meta">{meta_html}</div></header>
 <main>
 <div class="toolbar">
