@@ -4,7 +4,7 @@ Tools for checking Palo Alto Networks firewalls before and after a PAN-OS upgrad
 
 | File | Purpose |
 |---|---|
-| [`04220012_2026-10-01_pre_post_checks_v2.py`](04220012_2026-10-01_pre_post_checks_v2.py) | Connects to each firewall, runs readiness checks and state snapshots, saves them as JSON, and on the second run compares pre vs. post. |
+| [`pre_post_checks_html.py`](pre_post_checks_html.py) | Connects to each firewall, runs readiness checks and state snapshots, saves them as JSON, and on the second run compares pre vs. post. |
 | [`generate_html_report.py`](generate_html_report.py) | Reads the JSON files and builds one combined HTML report per change record. Called automatically by the check script after a post-check run; can also be run on its own. |
 
 > Other files in this folder (`04220012_2026-10-01_pre_post_checks_v3.py`, `Upgrade_checks.py`) are not covered by this document. The v3 script does not include the fixes and HTML report integration described here.
@@ -86,19 +86,19 @@ A short summary of each device's comparison is printed to the console.
 
 ```bat
 :: Uses devices.csv in the current folder, or STATIC_INVENTORY if there is no CSV
-python 04220012_2026-10-01_pre_post_checks_v2.py --change-record CHG0012345
+python pre_post_checks_html.py --change-record CHG0012345
 
 :: Single device
-python 04220012_2026-10-01_pre_post_checks_v2.py --change-record CHG0012345 --host 10.0.0.1
+python pre_post_checks_html.py --change-record CHG0012345 --host 10.0.0.1
 
 :: Specific inventory file
-python 04220012_2026-10-01_pre_post_checks_v2.py --change-record CHG0012345 --inventory-file my_devices.csv
+python pre_post_checks_html.py --change-record CHG0012345 --inventory-file my_devices.csv
 
 :: Post-check run with a dark-theme report
-python 04220012_2026-10-01_pre_post_checks_v2.py --change-record CHG0012345 --report-theme dark
+python pre_post_checks_html.py --change-record CHG0012345 --report-theme dark
 
 :: Post-check run without building the HTML report
-python 04220012_2026-10-01_pre_post_checks_v2.py --change-record CHG0012345 --no-html-report
+python pre_post_checks_html.py --change-record CHG0012345 --no-html-report
 ```
 
 ### Command-line options
