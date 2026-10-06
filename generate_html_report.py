@@ -53,6 +53,10 @@ COMP_SUFFIX = "_comparison.json"
 # --------------------------------------------------------------------------- #
 PASS, FAIL, ERROR, SKIP, NA, INFO = "pass", "fail", "error", "skip", "na", "info"
 
+# Snapshot *capture* results. Capturing data is not a pass/fail test - state is
+# only judged in the comparison - so capture uses its own vocabulary.
+CAPTURED, CAPTURE_FAILED, NOT_APPLICABLE = "captured", "capture_failed", "not_applicable"
+
 STATUS_LABEL = {
     PASS: "PASS",
     FAIL: "FAIL",
@@ -60,15 +64,48 @@ STATUS_LABEL = {
     SKIP: "SKIPPED",
     NA: "N/A",
     INFO: "INFO",
+    CAPTURED: "CAPTURED",
+    CAPTURE_FAILED: "NOT CAPTURED",
+    NOT_APPLICABLE: "NOT APPLICABLE",
 }
 
+# Display order for counts in the summary cards.
+STATUS_ORDER = (PASS, CAPTURED, FAIL, ERROR, CAPTURE_FAILED, SKIP, NOT_APPLICABLE, NA, INFO)
+
 # Higher number = worse. Used to roll multiple statuses up into one.
-SEVERITY = {PASS: 0, NA: 1, INFO: 1, SKIP: 2, FAIL: 3, ERROR: 4}
+SEVERITY = {
+    PASS: 0, CAPTURED: 0,
+    NA: 1, INFO: 1, NOT_APPLICABLE: 1,
+    SKIP: 2,
+    FAIL: 3,
+    ERROR: 4, CAPTURE_FAILED: 4,
+}
+
+# Capture statuses reuse the colours of their pass/error/n-a equivalents, and
+# map onto them when a device's overall status is worked out.
+STATUS_CSS = {CAPTURED: PASS, CAPTURE_FAILED: ERROR, NOT_APPLICABLE: NA}
+
+# Statuses that say nothing about the health of the device. They are left out
+# of every roll-up (section header, overview columns, device overall, report
+# overall) as long as at least one real result exists.
+ROLLUP_IGNORED = {SKIP, NA, NOT_APPLICABLE, INFO}
+
+
+def css(status: str) -> str:
+    return STATUS_CSS.get(status, status)
 
 
 def worst(statuses: Iterable[str]) -> str:
     statuses = [s for s in statuses if s]
     return max(statuses, key=lambda s: SEVERITY.get(s, 0)) if statuses else NA
+
+
+def rollup(statuses: Iterable[str]) -> str:
+    """Worst *meaningful* status. Skipped / not-applicable / not-evaluated
+    results are ignored unless nothing else is available."""
+    statuses = [s for s in statuses if s]
+    real = [s for s in statuses if s not in ROLLUP_IGNORED]
+    return worst(real) if real else worst(statuses)
 
 
 def check_status(entry: Any) -> str:
@@ -104,7 +141,7 @@ def fmt_value(value: Any) -> str:
 
 
 def badge(status: str) -> str:
-    return f'<span class="badge {status}">{STATUS_LABEL.get(status, status.upper())}</span>'
+    return f'<span class="badge {css(status)}">{STATUS_LABEL.get(status, status.upper())}</span>'
 
 
 def details(
@@ -116,7 +153,7 @@ def details(
     extra: str = "",
     top_level: bool = False,
 ) -> str:
-    cls = f"item {status}" + (" top" if top_level else "")
+    cls = f"item {css(status)}" + (" top" if top_level else "")
     return (
         f'<details class="{cls}"{" open" if open_ else ""}>'
         f'<summary>{badge(status)}<span class="name">{esc(title)}</span>'
@@ -220,6 +257,54 @@ def snapshot_size(entry: Any) -> str:
     return ""
 
 
+# Snapshot areas tied to one routing engine. A firewall runs either the legacy
+# engine or Advanced Routing, so one family is always expected to fail.
+LEGACY_ROUTING_AREAS = ("routes", "fib_routes", "bgp_peers")
+ARE_ROUTING_AREAS = ("are_routes", "are_fib_routes")
+
+
+def is_captured(entry: Any) -> bool:
+    return isinstance(entry, dict) and entry.get("snapshot") is not None
+
+
+def not_applicable_reason(area: str, snap: Dict[str, Any]) -> Optional[str]:
+    """Explain why a failed capture of *area* is expected, or return None.
+
+    A routing area failing is expected when the *other* routing engine's
+    areas were captured in the same run (so the device clearly runs that
+    engine) and none of this engine's areas were.
+    """
+    if area in LEGACY_ROUTING_AREAS:
+        own, other, engine = LEGACY_ROUTING_AREAS, ARE_ROUTING_AREAS, "Advanced Routing"
+    elif area in ARE_ROUTING_AREAS:
+        own, other, engine = ARE_ROUTING_AREAS, LEGACY_ROUTING_AREAS, "the legacy routing engine"
+    else:
+        return None
+    if any(is_captured(snap.get(a)) for a in own):
+        return None  # this engine works on the device, so the failure is real
+    working = [a for a in other if is_captured(snap.get(a))]
+    if not working:
+        return None
+    return (
+        f"Not applicable - the device is running {engine} "
+        f"(routing data captured via {', '.join(working)})."
+    )
+
+
+def capture_status(area: str, entry: Any, snap: Dict[str, Any]) -> str:
+    if entry is None:
+        return NA
+    if not isinstance(entry, dict):
+        return CAPTURE_FAILED
+    if str(entry.get("status", "")).upper() == "SKIPPED":
+        return SKIP
+    if is_captured(entry):
+        return CAPTURED
+    if not_applicable_reason(area, snap):
+        return NOT_APPLICABLE
+    return CAPTURE_FAILED
+
+
 def section_capture(pre_state: Dict, post_state: Optional[Dict]) -> Tuple[str, List[str]]:
     pre = normalise_checks(pre_state.get("state_snapshot"))
     post = normalise_checks(post_state.get("state_snapshot")) if post_state else {}
@@ -227,33 +312,42 @@ def section_capture(pre_state: Dict, post_state: Optional[Dict]) -> Tuple[str, L
     if not names:
         return muted("No state snapshots recorded."), []
 
-    items, statuses = [], []
+    intro = muted(
+        "Shows whether state data was collected on each run. Captured data is not "
+        "pass/fail - state is evaluated in the Snapshot comparison section once the "
+        "post-check has run."
+    )
+    items, statuses = [intro], []
     has_post = post_state is not None
     for n in names:
         p, q = pre.get(n), post.get(n)
-        pre_s = check_status(p) if p is not None else NA
-        post_s = check_status(q) if q is not None else NA
-        overall = worst([pre_s, post_s]) if has_post else pre_s
+        pre_s = capture_status(n, p, pre)
+        post_s = capture_status(n, q, post)
+        overall = rollup([pre_s, post_s]) if has_post else pre_s
 
         extra = f'<span class="lbl">Pre</span>{badge(pre_s)}<span class="cnt">{esc(snapshot_size(p))}</span>'
         if has_post:
             extra += f'<span class="lbl">Post</span>{badge(post_s)}<span class="cnt">{esc(snapshot_size(q))}</span>'
 
         rows = []
-        for label, entry, st in (("Pre-check", p, pre_s), ("Post-check", q, post_s)):
+        for label, entry, st, snap in (("Pre-check", p, pre_s, pre), ("Post-check", q, post_s, post)):
             if label == "Post-check" and not has_post:
                 continue
+            if entry is None:
+                rows.append([esc(label), badge(NA), muted("Area not requested in this run."), ""])
+                continue
             reason = entry.get("reason") if isinstance(entry, dict) else entry
-            rows.append(
-                [
-                    esc(label),
-                    badge(st),
-                    fmt_value(reason) if reason else muted("Captured successfully."),
-                    esc(snapshot_size(entry)),
-                ]
-            )
-        body = table(["Run", "Status", "Reason", "Size"], rows)
-        for label, entry in (("Pre-check raw snapshot", p), ("Post-check raw snapshot", q)):
+            if st == CAPTURED:
+                detail = muted("Data captured successfully.")
+            elif st == NOT_APPLICABLE:
+                detail = esc(not_applicable_reason(n, snap))
+                if reason:
+                    detail += f'<p class="muted">Device response: {esc(reason)}</p>'
+            else:
+                detail = fmt_value(reason) if reason else muted("No data returned.")
+            rows.append([esc(label), badge(st), detail, esc(snapshot_size(entry))])
+        body = table(["Run", "Capture result", "Detail", "Entries"], rows)
+        for label, entry in (("Pre-check captured data", p), ("Post-check captured data", q)):
             if isinstance(entry, dict) and entry.get("snapshot") is not None:
                 body += json_block(entry["snapshot"], label)
         items.append(details(n, overall, body, extra=extra, top_level=True))
@@ -370,24 +464,40 @@ def section_comparison(
             else INFO
         )
 
-    # Areas that were captured but not compared (e.g. capture failed on one side).
+    # Areas that were requested but not compared (no data on one or both sides).
     pre_snap = normalise_checks(pre_state.get("state_snapshot"))
     post_snap = normalise_checks((post_state or {}).get("state_snapshot"))
     for area in dict.fromkeys(list(pre_snap) + list(post_snap)):
         if area in native:
             continue
         reasons = []
+        unexpected = False
         for label, snap in (("Pre-check", pre_snap), ("Post-check", post_snap)):
             entry = snap.get(area)
             if entry is None:
                 reasons.append([esc(label), muted("Area not captured.")])
-            elif isinstance(entry, dict) and entry.get("snapshot") is None:
-                reasons.append([esc(label), fmt_value(entry.get("reason") or "No data captured.")])
-        body = muted("This area was not compared because usable data was not available on both sides.")
+                unexpected = True
+            elif not is_captured(entry):
+                na = not_applicable_reason(area, snap)
+                if na:
+                    reasons.append([esc(label), esc(na)])
+                else:
+                    reason = entry.get("reason") if isinstance(entry, dict) else entry
+                    reasons.append([esc(label), fmt_value(reason or "No data captured.")])
+                    unexpected = True
+
+        if reasons and not unexpected:
+            status = NOT_APPLICABLE
+            flag = "not applicable"
+            body = muted("Not compared - this area does not apply to the device's routing mode.")
+        else:
+            status = SKIP
+            flag = "not compared"
+            body = muted("Not compared - usable data was not available on both sides.")
         if reasons:
             body += table(["Run", "Reason"], reasons)
-        items.append(details(area, SKIP, body, extra='<span class="flag">not compared</span>', top_level=True))
-        statuses.append(SKIP)
+        items.append(details(area, status, body, extra=f'<span class="flag">{flag}</span>', top_level=True))
+        statuses.append(status)
 
     return "".join(items), statuses
 
@@ -477,14 +587,17 @@ class Device:
 
     @property
     def overall(self) -> str:
+        """Overall device health: the worst meaningful section result.
+        Skipped / not-applicable results are ignored, and capture results map
+        onto their pass/error equivalents."""
         if self.load_errors:
             return ERROR
-        return worst(s for *_, sts in self.sections for s in sts)
+        return rollup(css(rollup(sts)) for *_, sts in self.sections)
 
     def section_status(self, short: str) -> str:
         for _, s, _, sts in self.sections:
             if s == short:
-                return worst(sts)
+                return rollup(sts)
         return NA
 
 
@@ -632,7 +745,11 @@ code{font-family:Consolas,monospace;font-size:12px}
 details.raw{margin:6px 0}details.raw>summary{cursor:pointer;color:var(--info);font-size:12px}
 details.raw pre{background:var(--code-bg);border:1px solid var(--line);padding:8px;max-height:400px;overflow:auto;margin-top:4px}
 body.failures-only details.item.top.pass,body.failures-only details.item.top.na,
-body.failures-only details.device.pass,body.failures-only table.overview tr.pass{display:none}
+body.failures-only details.item.top.skip,body.failures-only details.item.top.info,
+body.failures-only details.device.pass,body.failures-only details.device.na,
+body.failures-only details.device.skip,
+body.failures-only table.overview tr.pass,body.failures-only table.overview tr.na,
+body.failures-only table.overview tr.skip{display:none}
 .hidden-by-filter{display:none !important}
 footer{color:var(--muted);font-size:12px;text-align:center;padding:10px 0 24px}
 """
@@ -692,10 +809,10 @@ def summary_card(title: str, statuses: List[str], unit: str = "") -> str:
         counts[s] = counts.get(s, 0) + 1
     parts = "".join(
         f"<span>{badge(s)} {counts[s]}{esc(unit)}</span>"
-        for s in (PASS, FAIL, ERROR, SKIP, NA, INFO)
+        for s in STATUS_ORDER
         if counts.get(s)
     ) or muted("No data")
-    return f'<div class="card {worst(statuses)}"><h3>{esc(title)}</h3><div class="counts">{parts}</div></div>'
+    return f'<div class="card {css(rollup(statuses))}"><h3>{esc(title)}</h3><div class="counts">{parts}</div></div>'
 
 
 # --------------------------------------------------------------------------- #
@@ -794,7 +911,7 @@ def render_device(dev: Device, idx: int, open_: bool) -> str:
         )
 
     for title, _, content, sts in dev.sections:
-        body += f"<section><h2>{badge(worst(sts))} {esc(title)}</h2>{content}</section>"
+        body += f"<section><h2>{badge(rollup(sts))} {esc(title)}</h2>{content}</section>"
 
     ignored = (dev.comparison or {}).get("ignored_keys")
     if ignored:
@@ -820,9 +937,9 @@ THEMES = ("auto", "light", "dark")
 def build_html(title_key: str, devices: List[Device], theme: str = "auto") -> str:
     theme = theme if theme in THEMES else "auto"
     devices = sorted(devices, key=lambda d: natural_key(d.hostname))
-    overall = worst(d.overall for d in devices)
+    overall = rollup(d.overall for d in devices)
     single = len(devices) == 1
-    with_issues = sum(1 for d in devices if d.overall != PASS)
+    with_issues = sum(1 for d in devices if d.overall in (FAIL, ERROR))
 
     change_records = sorted({d.change_record for d in devices})
     generated = fmt_dt(dt.datetime.now(dt.timezone.utc))
@@ -857,7 +974,7 @@ def build_html(title_key: str, devices: List[Device], theme: str = "auto") -> st
 <title>{esc(title_key)} - Upgrade Assurance Report</title>
 <style>{CSS}</style><script>{JS}</script></head>
 <body>
-<header><h1>{badge(overall)} Change Assurance Report - {esc(title_key)}</h1>
+<header><h1>{badge(overall)} Upgrade Assurance Report - {esc(title_key)}</h1>
 <div class="meta">{meta_html}</div></header>
 <main>
 <div class="toolbar">
