@@ -7,8 +7,6 @@ Tools for checking Palo Alto Networks firewalls before and after a PAN-OS upgrad
 | [`pre_post_checks_html.py`](pre_post_checks_html.py) | Connects to each firewall, runs readiness checks and state snapshots, saves them as JSON, and on the second run compares pre vs. post. |
 | [`generate_html_report.py`](generate_html_report.py) | Reads the JSON files and builds one combined HTML report per change record. Called automatically by the check script after a post-check run; can also be run on its own. |
 
-> Other files in this folder (`04220012_2026-10-01_pre_post_checks_v3.py`, `Upgrade_checks.py`) are not covered by this document. The v3 script does not include the fixes and HTML report integration described here.
-
 ---
 
 ## Contents
