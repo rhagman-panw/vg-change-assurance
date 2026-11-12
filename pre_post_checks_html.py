@@ -122,7 +122,7 @@ logger = logging.getLogger("panos_upgrade_assurance")
 # Static fallback inventory - edit directly if you don't want to use a CSV
 # --------------------------------------------------------------------------- #
 STATIC_INVENTORY: List[str] = [
-     "192.168.4.16",
+    # "192.168.1.1",
     # "fw2.example.com",
     # "10.0.0.1",
 ]
@@ -213,7 +213,7 @@ SNAPSHOT_IGNORE_KEYS: Dict[str, List[str]] = {
     "arp_table": ["ttl", "port"],        
     "nics": [],
     "ip_sec_tunnels": [],
-    "bgp_peers": ["status-duration", "last-error"],
+    "bgp_peers": ["status-duration", "last-error", "msg-total-in", "msg-total-out", "msg-total-queued", "msg-total-dropped", "last-update-age"],
     "license": ["expires", "expired"],
     "content_version": [],               
 }
@@ -494,7 +494,7 @@ def collect_state(fw: Firewall, proxy: FirewallProxy, check_executor: CheckFirew
     state: Dict[str, Any] = {
         "metadata": {
             "hostname": fw.hostname,
-            "ip_address": getattr(fw, "hostname", None),
+            "ip_address": fw.ip
             "timestamp": dt.datetime.now(dt.timezone.utc).isoformat() + "Z",
         }
     }
